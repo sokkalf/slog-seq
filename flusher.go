@@ -3,6 +3,7 @@ package slogseq
 import (
 	"crypto/tls"
 	"encoding/json"
+	"fmt"
 	"maps"
 	"net"
 	"net/http"
@@ -126,6 +127,7 @@ func (h *SeqHandler) attemptSendBatch(events []CLEFEvent) bool {
 
 	req, err := http.NewRequest("POST", h.seqURL, strings.NewReader(sb.String()))
 	if err != nil {
+		h.errorHandlerFunc(err)
 		return false
 	}
 	req.Header.Set("Content-Type", "application/vnd.serilog.clef")
@@ -135,11 +137,13 @@ func (h *SeqHandler) attemptSendBatch(events []CLEFEvent) bool {
 
 	resp, err := h.client.Do(req)
 	if err != nil {
+		h.errorHandlerFunc(err)
 		return false
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		h.errorHandlerFunc(fmt.Errorf("Seq server returned status code %d", resp.StatusCode))
 		return false
 	}
 

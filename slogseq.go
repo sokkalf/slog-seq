@@ -109,3 +109,10 @@ func WithNonBlocking(nonBlocking bool) SeqOption {
 		return h
 	})
 }
+
+func WithErrorHandlerFunc(fn func(error)) SeqOption {
+	return seqOptionFunc(func(h *SeqHandler) *SeqHandler {
+		h.errorHandlerFunc = fn
+		return h
+	})
+}

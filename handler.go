@@ -42,6 +42,9 @@ type SeqHandler struct {
 	workers []worker
 	next    uint32
 
+	// optional function that will get called on errors
+	errorHandlerFunc func(error)
+
 	// Other fields for global attrs, grouping, etc.
 	attrs   []slog.Attr
 	groups  []string
@@ -67,6 +70,11 @@ func newSeqHandler(seqURL string) *SeqHandler {
 func (h *SeqHandler) start() {
 	if h.client == nil {
 		h.client = newHttpClient(h.disableTLSVerify)
+	}
+	if h.errorHandlerFunc == nil {
+		h.errorHandlerFunc = func(err error) {
+			// by default we do nothing
+		}
 	}
 	h.workers = make([]worker, h.workerCount)
 	// Start background workers
