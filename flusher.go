@@ -176,6 +176,10 @@ func (h *SeqHandler) purgeOldEvents(w *worker, olderThan time.Time) {
 			newBuf = append(newBuf, e)
 		}
 	}
+	purgedEvents := len(w.retryBuffer) - len(newBuf)
+	if purgedEvents > 0 {
+		h.errorHandlerFunc(fmt.Errorf("purged %d events from retry buffer older than %s", purgedEvents, olderThan.Format(time.RFC3339)))
+	}
 	w.retryBuffer = newBuf
 }
 

@@ -47,6 +47,9 @@ func TestRunBackgroundFlusher_BasicFlushOnBatchSize(t *testing.T) {
 			wg:          sync.WaitGroup{},
 			retryBuffer: make([]CLEFEvent, 0),
 		}},
+		errorHandlerFunc: func(err error) {
+			return
+		},
 	}
 
 	w := &handler.workers[0]
@@ -181,6 +184,9 @@ func TestPurgeOldEvents(t *testing.T) {
 
 	handler := &SeqHandler{
 		workers: []worker{{retryBuffer: []CLEFEvent{oldEvent, newEvent}}},
+		errorHandlerFunc: func(err error) {
+			return
+		},
 	}
 	w := &handler.workers[0]
 
