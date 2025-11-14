@@ -145,7 +145,7 @@ func (h *SeqHandler) attemptSendBatch(events []CLEFEvent) bool {
 	if resp.StatusCode == http.StatusRequestEntityTooLarge {
 		// The event batch is too large to send to the Seq server.
 		// Drop the entire batch and log an error.
-		h.errorHandlerFunc(fmt.Errorf("dropping event; size exceeds Seq server limit"))
+		h.errorHandlerFunc(fmt.Errorf("dropping event; size exceeds Seq server limit, batch size: %d", len(events)))
 		return true
 	}
 
