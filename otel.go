@@ -56,7 +56,7 @@ func (p *LoggingSpanProcessor) logOtelSpanAsCLEF(span trace.ReadOnlySpan) {
 		SpanID:     sc.SpanID().String(),
 		SpanStart:  span.StartTime(),
 		SpanKind:   spanKind,
-		Properties: make(map[string]any),
+		Properties: map[string]any{"SpanName": span.Name()},
 	}
 
 	if parent := span.Parent(); parent.IsValid() {
@@ -88,14 +88,13 @@ func (p *LoggingSpanProcessor) logOtelEventAsCLEF(span trace.ReadOnlySpan, e tra
 
 	spanKind := tr.ValidateSpanKind(span.SpanKind()).String()
 	event := &CLEFEvent{
-		Timestamp:          e.Time,
-		Message:            e.Name,
-		TraceID:            sc.TraceID().String(),
-		SpanID:             sc.SpanID().String(),
-		SpanStart:          span.StartTime(),
-		SpanKind:           spanKind,
-		ResourceAttributes: map[string]any{"service": map[string]any{"name": span.Name()}},
-		Properties:         make(map[string]any),
+		Timestamp:  e.Time,
+		Message:    e.Name,
+		TraceID:    sc.TraceID().String(),
+		SpanID:     sc.SpanID().String(),
+		SpanStart:  span.StartTime(),
+		SpanKind:   spanKind,
+		Properties: map[string]any{"SpanName": span.Name()},
 	}
 
 	if parent := span.Parent(); parent.IsValid() {
