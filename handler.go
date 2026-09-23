@@ -281,16 +281,18 @@ func addNested(dst map[string]any, path []string, val any) {
 }
 
 func convertLevel(l slog.Level) string {
-	switch l {
-	case slog.LevelDebug:
+	switch {
+	case l < slog.LevelDebug:
+		return CLEFLevelVerbose.String()
+	case l < slog.LevelInfo:
 		return CLEFLevelDebug.String()
-	case slog.LevelInfo:
+	case l < slog.LevelWarn:
 		return CLEFLevelInformation.String()
-	case slog.LevelWarn:
+	case l < slog.LevelError:
 		return CLEFLevelWarning.String()
-	case slog.LevelError:
+	case l < slog.LevelError+4:
 		return CLEFLevelError.String()
 	default:
-		return CLEFLevelInformation.String()
+		return CLEFLevelFatal.String()
 	}
 }

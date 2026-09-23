@@ -186,11 +186,18 @@ func TestSeqHandler_convertLevel(t *testing.T) {
 		in       slog.Level
 		expected string
 	}{
+		{slog.LevelDebug - 4, "Verbose"},
+		{slog.LevelDebug - 1, "Verbose"},
 		{slog.LevelDebug, "Debug"},
+		{slog.LevelDebug + 2, "Debug"},
 		{slog.LevelInfo, "Information"},
+		{slog.LevelInfo + 2, "Information"},
 		{slog.LevelWarn, "Warning"},
+		{slog.LevelWarn + 1, "Warning"},
 		{slog.LevelError, "Error"},
-		{42, "Information"}, // Something out of range
+		{slog.LevelError + 3, "Error"},
+		{slog.LevelError + 4, "Fatal"},
+		{42, "Fatal"},
 	}
 
 	for _, c := range cases {
