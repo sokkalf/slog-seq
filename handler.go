@@ -116,9 +116,6 @@ func (h *SeqHandler) Handle(ctx context.Context, r slog.Record) error {
 			a.Key = strings.Join(h.groups, ".") + "." + a.Key
 		}
 
-		if v, ok := a.Value.Any().(error); ok {
-			a.Value = slog.StringValue(v.Error())
-		}
 		h.addAttr(props, a)
 		return true
 	})
@@ -251,6 +248,10 @@ func (h *SeqHandler) addAttr(dst map[string]any, a slog.Attr) {
 			h.addAttr(groupMap, ga)
 		}
 	default:
+		if err, ok := a.Value.Any().(error); ok {
+			dst[a.Key] = err.Error()
+			return
+		}
 		dst[a.Key] = a.Value.Any()
 	}
 }

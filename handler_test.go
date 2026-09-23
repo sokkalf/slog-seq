@@ -2,6 +2,7 @@ package slogseq
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"strings"
 	"testing"
@@ -365,5 +366,47 @@ func TestSeqHandler_AnonymousGroup(t *testing.T) {
 		cmpopts.IgnoreFields(CLEFEvent{}, "Timestamp", "Message"),
 	); diff != "" {
 		t.Errorf("events differ: (-arg +with)\n%s", diff)
+	}
+}
+
+// TestSeqHandler_errorValues checks that error values are sent as strings no
+// matter how they reach the handler.
+func TestSeqHandler_errorValues(t *testing.T) {
+	_, handler := NewLogger("http://fake",
+		WithWorkers(1),
+		WithGlobalAttrs(slog.Any("global_err", errors.New("global"))),
+	)
+	defer handler.Close()
+	handler.noFlush = true // Disable flushing for this test
+
+	logger := slog.New(handler)
+	logger.With("with_err", errors.New("with")).
+		WithGroup("g").
+		Info("errors",
+			"record_err", errors.New("record"),
+			slog.Group("inner", slog.Any("group_err", errors.New("group"))),
+		)
+
+	evt := <-handler.workers[0].eventsCh
+
+	if got := evt.Properties["global_err"]; got != "global" {
+		t.Errorf("global attrs: expected global_err=\"global\", got %#v", got)
+	}
+	if got := evt.Properties["with_err"]; got != "with" {
+		t.Errorf("With(): expected with_err=\"with\", got %#v", got)
+	}
+	g, ok := evt.Properties["g"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected group g, got %#v", evt.Properties["g"])
+	}
+	if got := g["record_err"]; got != "record" {
+		t.Errorf("record attr: expected g.record_err=\"record\", got %#v", got)
+	}
+	inner, ok := g["inner"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected group g.inner, got %#v", g["inner"])
+	}
+	if got := inner["group_err"]; got != "group" {
+		t.Errorf("group attr: expected g.inner.group_err=\"group\", got %#v", got)
 	}
 }
