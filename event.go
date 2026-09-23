@@ -8,7 +8,7 @@ type CLEFEvent struct {
 	Timestamp          time.Time      `json:"@t,omitzero"`
 	Message            string         `json:"@m,omitempty"`
 	Exception          string         `json:"@x,omitempty"`
-	Level              string         `json:"@l"`
+	Level              string         `json:"@l,omitempty"`
 	Properties         map[string]any `json:"-"`
 	TraceID            string         `json:"@tr,omitempty"`
 	SpanID             string         `json:"@sp,omitempty"`
