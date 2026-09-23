@@ -4,7 +4,6 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
-	"maps"
 	"net"
 	"net/http"
 	"strings"
@@ -80,10 +79,22 @@ func (h *SeqHandler) flushCurrentBatch(w *worker, events *[]CLEFEvent) {
 }
 
 func encodeEvent(e CLEFEvent) map[string]any {
-	topLevel := map[string]any{
-		"@t": e.Timestamp.Format(time.RFC3339Nano),
-		"@m": e.Message,
-		"@l": e.Level,
+	topLevel := make(map[string]any, len(e.Properties)+10)
+	// User properties are added first, with a leading '@' escaped as "@@" per the
+	// CLEF spec, so they can never collide with the reserved fields below.
+	for k, v := range e.Properties {
+		if strings.HasPrefix(k, "@") {
+			k = "@" + k
+		}
+		topLevel[k] = v
+	}
+	// A zero time is left out so Seq uses the ingestion time instead.
+	if !e.Timestamp.IsZero() {
+		topLevel["@t"] = e.Timestamp.Format(time.RFC3339Nano)
+	}
+	topLevel["@m"] = e.Message
+	if e.Level != "" {
+		topLevel["@l"] = e.Level
 	}
 	if e.Exception != "" {
 		topLevel["@x"] = e.Exception
@@ -106,7 +117,6 @@ func encodeEvent(e CLEFEvent) map[string]any {
 	if e.SpanKind != "" {
 		topLevel["@sk"] = e.SpanKind
 	}
-	maps.Copy(topLevel, e.Properties)
 	return topLevel
 }
 

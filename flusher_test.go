@@ -226,3 +226,31 @@ func TestNoFlushMode(t *testing.T) {
 	// Confirm that we never stored anything in retryBuffer
 	assert.Nil(t, w.retryBuffer, "retryBuffer should remain nil/empty in noFlush mode")
 }
+
+func TestEncodeEvent_ClefFields(t *testing.T) {
+	ts := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	out := encodeEvent(CLEFEvent{
+		Timestamp: ts,
+		Message:   "real",
+		Level:     CLEFLevelInformation.String(),
+		Properties: map[string]any{
+			"@m":    "x",
+			"@l":    "Fatal",
+			"@@t":   "already escaped",
+			"plain": 1,
+		},
+	})
+	assert.Equal(t, ts.Format(time.RFC3339Nano), out["@t"])
+	assert.Equal(t, "real", out["@m"])
+	assert.Equal(t, "Information", out["@l"])
+	assert.Equal(t, "x", out["@@m"])
+	assert.Equal(t, "Fatal", out["@@l"])
+	assert.Equal(t, "already escaped", out["@@@t"])
+	assert.Equal(t, 1, out["plain"])
+
+	// Zero time and empty level are left out.
+	out = encodeEvent(CLEFEvent{Message: "span event"})
+	assert.NotContains(t, out, "@t")
+	assert.NotContains(t, out, "@l")
+	assert.Equal(t, "span event", out["@m"])
+}
