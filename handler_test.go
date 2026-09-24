@@ -41,6 +41,34 @@ func TestNewSeqHandler(t *testing.T) {
 	handler.Close()
 }
 
+// TestNewSeqHandler_InvalidOptions checks that invalid options fall back to the defaults instead of panicking.
+func TestNewSeqHandler_InvalidOptions(t *testing.T) {
+	for _, n := range []int{0, -1} {
+		logger, handler := NewLogger("http://fake",
+			WithBatchSize(n),
+			WithFlushInterval(time.Duration(n)),
+			WithWorkers(n),
+			WithHandlerOptions(nil),
+		)
+
+		if handler.batchSize != defaultBatchSize {
+			t.Errorf("n=%d: expected batchSize = %d, got %d", n, defaultBatchSize, handler.batchSize)
+		}
+		if handler.flushInterval != defaultFlushInterval {
+			t.Errorf("n=%d: expected flushInterval = %v, got %v", n, defaultFlushInterval, handler.flushInterval)
+		}
+		if handler.workerCount != defaultWorkerCount {
+			t.Errorf("n=%d: expected workerCount = %d, got %d", n, defaultWorkerCount, handler.workerCount)
+		}
+		if handler.options.Level != nil {
+			t.Errorf("n=%d: expected default handler options, got %+v", n, handler.options)
+		}
+
+		logger.Info("should not panic")
+		handler.Close()
+	}
+}
+
 // TestSeqHandler_Handle checks that Handle() sends events with correct properties.
 func TestSeqHandler_Handle(t *testing.T) {
 	_, handler := NewLogger("http://fake",
