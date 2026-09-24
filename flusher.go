@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"strings"
@@ -150,7 +151,11 @@ func (h *SeqHandler) attemptSendBatch(events []CLEFEvent) bool {
 		h.errorHandlerFunc(err)
 		return false
 	}
-	defer resp.Body.Close()
+	defer func() {
+		// Drain the body so the keep-alive connection can be reused.
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}()
 
 	if resp.StatusCode == http.StatusRequestEntityTooLarge {
 		// The event batch is too large to send to the Seq server.
@@ -193,8 +198,10 @@ func (h *SeqHandler) purgeOldEvents(w *worker, olderThan time.Time) {
 	w.retryBuffer = newBuf
 }
 
-func newHttpClient(skipVerify bool) *http.Client {
+func newHttpClient(skipVerify bool, workerCount int) *http.Client {
 	return &http.Client{
+		// Bounds the whole request, so a hung server can't block a worker forever.
+		Timeout: 30 * time.Second,
 		Transport: &http.Transport{
 			Proxy: http.ProxyFromEnvironment,
 			DialContext: (&net.Dialer{
@@ -203,10 +210,12 @@ func newHttpClient(skipVerify bool) *http.Client {
 			TLSClientConfig: &tls.Config{
 				InsecureSkipVerify: skipVerify,
 			},
-			MaxIdleConns:          100,
+			MaxIdleConns: 100,
+			// Each worker sends to the same host, so keep one idle connection per worker.
+			MaxIdleConnsPerHost:   max(workerCount, 2),
 			IdleConnTimeout:       90 * time.Second,
 			TLSHandshakeTimeout:   10 * time.Second,
-			ExpectContinueTimeout: 10 * time.Second,
+			ResponseHeaderTimeout: 20 * time.Second,
 		},
 	}
 }

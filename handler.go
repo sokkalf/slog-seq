@@ -69,7 +69,7 @@ func newSeqHandler(seqURL string) *SeqHandler {
 
 func (h *SeqHandler) start() {
 	if h.client == nil {
-		h.client = newHttpClient(h.disableTLSVerify)
+		h.client = newHttpClient(h.disableTLSVerify, h.workerCount)
 	}
 	if h.errorHandlerFunc == nil {
 		h.errorHandlerFunc = func(err error) {
