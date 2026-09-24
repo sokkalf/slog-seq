@@ -1,5 +1,4 @@
 [![Go Reference](https://pkg.go.dev/badge/github.com/sokkalf/slog-seq.svg)](https://pkg.go.dev/github.com/sokkalf/slog-seq)
-[![Go Report Card](https://goreportcard.com/badge/github.com/sokkalf/slog-seq)](https://goreportcard.com/report/github.com/sokkalf/slog-seq)
 ![CI tests](https://github.com/sokkalf/slog-seq/actions/workflows/tests.yml/badge.svg)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 
