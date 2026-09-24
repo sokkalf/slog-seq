@@ -51,13 +51,19 @@ type SeqHandler struct {
 	options slog.HandlerOptions
 }
 
+const (
+	defaultBatchSize     = 50
+	defaultFlushInterval = 2 * time.Second
+	defaultWorkerCount   = 1
+)
+
 func newSeqHandler(seqURL string) *SeqHandler {
 	h := &SeqHandler{
 		seqURL: seqURL,
 		// sane defaults
-		batchSize:     50,
-		flushInterval: 2 * time.Second,
-		workerCount:   1,
+		batchSize:     defaultBatchSize,
+		flushInterval: defaultFlushInterval,
+		workerCount:   defaultWorkerCount,
 		nonBlocking:   true,
 		noFlush:       false,
 		sourceKey:     slog.SourceKey,
@@ -65,6 +71,19 @@ func newSeqHandler(seqURL string) *SeqHandler {
 	}
 
 	return h
+}
+
+// applyDefaults replaces invalid (zero or negative) settings with their defaults.
+func (h *SeqHandler) applyDefaults() {
+	if h.batchSize <= 0 {
+		h.batchSize = defaultBatchSize
+	}
+	if h.flushInterval <= 0 {
+		h.flushInterval = defaultFlushInterval
+	}
+	if h.workerCount <= 0 {
+		h.workerCount = defaultWorkerCount
+	}
 }
 
 func (h *SeqHandler) start() {

@@ -24,6 +24,7 @@ func NewLogger(seqURL string, opts ...SeqOption) (*slog.Logger, *SeqHandler) {
 	for _, opt := range opts {
 		handler = opt.apply(handler)
 	}
+	handler.applyDefaults()
 	handler.start()
 	return slog.New(handler), handler
 }
@@ -37,6 +38,7 @@ func WithAPIKey(apiKey string) SeqOption {
 }
 
 // WithBatchSize sets the number of events to batch before sending to Seq.
+// Default is 50. Values of zero or less use the default.
 func WithBatchSize(batchSize int) SeqOption {
 	return seqOptionFunc(func(h *SeqHandler) *SeqHandler {
 		h.batchSize = batchSize
@@ -45,6 +47,7 @@ func WithBatchSize(batchSize int) SeqOption {
 }
 
 // WithFlushInterval sets the interval at which to flush the batch.
+// Default is 2 seconds. Values of zero or less use the default.
 func WithFlushInterval(flushInterval time.Duration) SeqOption {
 	return seqOptionFunc(func(h *SeqHandler) *SeqHandler {
 		h.flushInterval = flushInterval
@@ -52,9 +55,13 @@ func WithFlushInterval(flushInterval time.Duration) SeqOption {
 	})
 }
 
-// WithHandlerOptions sets the slog handler options.
+// WithHandlerOptions sets the slog handler options. A nil value uses the default options.
 func WithHandlerOptions(opts *slog.HandlerOptions) SeqOption {
 	return seqOptionFunc(func(h *SeqHandler) *SeqHandler {
+		if opts == nil {
+			h.options = slog.HandlerOptions{}
+			return h
+		}
 		h.options = *opts
 		return h
 	})
@@ -93,7 +100,8 @@ func WithSourceKey(key string) SeqOption {
 }
 
 // WithWorkers sets the number of workers to use for sending events.
-// Default is 1. Consider increasing this if you have a very high volume of events.
+// Default is 1. Values of zero or less use the default.
+// Consider increasing this if you have a very high volume of events.
 func WithWorkers(count int) SeqOption {
 	return seqOptionFunc(func(h *SeqHandler) *SeqHandler {
 		h.workerCount = count
