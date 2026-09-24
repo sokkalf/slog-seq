@@ -23,6 +23,16 @@ type worker struct {
 	purgeTicker *time.Ticker
 }
 
+// lifecycle is shared by a handler and every handler derived from it with
+// WithAttrs or WithGroup, so closing one closes them all.
+type lifecycle struct {
+	// mu is held for reading while sending an event, so Close can't close a
+	// channel in the middle of a send.
+	mu        sync.RWMutex
+	closed    bool
+	closeOnce sync.Once
+}
+
 type SeqHandler struct {
 	// config
 	seqURL           string
@@ -39,8 +49,9 @@ type SeqHandler struct {
 	client *http.Client
 
 	// concurrency
-	workers []worker
-	next    uint32
+	workers   []worker
+	next      uint32
+	lifecycle *lifecycle
 
 	// optional function that will get called on errors
 	errorHandlerFunc func(error)
@@ -95,6 +106,7 @@ func (h *SeqHandler) start() {
 			// by default we do nothing
 		}
 	}
+	h.lifecycle = &lifecycle{}
 	h.workers = make([]worker, h.workerCount)
 	// Start background workers
 	for i := range h.workerCount {
@@ -167,6 +179,12 @@ func (h *SeqHandler) Handle(ctx context.Context, r slog.Record) error {
 }
 
 func (h *SeqHandler) HandleCLEFEvent(event CLEFEvent) {
+	h.lifecycle.mu.RLock()
+	defer h.lifecycle.mu.RUnlock()
+	if h.lifecycle.closed {
+		// handler is closed, drop event
+		return
+	}
 	idx := atomic.AddUint32(&h.next, 1) % uint32(len(h.workers))
 	if h.nonBlocking {
 		// send to channel, drop if full
@@ -221,14 +239,22 @@ func (h *SeqHandler) WithGroup(name string) slog.Handler {
 	return &h2
 }
 
+// Close stops the workers and sends any buffered events. It is safe to call
+// more than once. Events logged after Close are dropped.
 func (h *SeqHandler) Close() error {
-	// this is ugly, but we need to give all the events a chance to be sent
-	time.Sleep(50 * time.Millisecond)
-	for i := range h.workerCount {
-		close(h.workers[i].eventsCh)
-		close(h.workers[i].doneCh)
-		h.workers[i].wg.Wait()
-	}
+	h.lifecycle.closeOnce.Do(func() {
+		h.lifecycle.mu.Lock()
+		h.lifecycle.closed = true
+		h.lifecycle.mu.Unlock()
+
+		// this is ugly, but we need to give all the events a chance to be sent
+		time.Sleep(50 * time.Millisecond)
+		for i := range h.workerCount {
+			close(h.workers[i].eventsCh)
+			close(h.workers[i].doneCh)
+			h.workers[i].wg.Wait()
+		}
+	})
 	return nil
 }
 

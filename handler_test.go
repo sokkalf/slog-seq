@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -207,6 +208,50 @@ func TestSeqHandler_Close(t *testing.T) {
 
 	// Optionally, you might check that the background goroutine is done
 	// but we can't do that directly without instrumentation or reflection.
+}
+
+// TestSeqHandler_CloseTwice checks that a second Close() doesn't panic.
+func TestSeqHandler_CloseTwice(t *testing.T) {
+	_, handler := NewLogger("http://fake")
+
+	if err := handler.Close(); err != nil {
+		t.Errorf("first Close returned error: %v", err)
+	}
+	if err := handler.Close(); err != nil {
+		t.Errorf("second Close returned error: %v", err)
+	}
+}
+
+// TestSeqHandler_LogAfterClose checks that logging after Close() is a no-op, also through derived handlers.
+func TestSeqHandler_LogAfterClose(t *testing.T) {
+	for _, nonBlocking := range []bool{true, false} {
+		logger, handler := NewLogger("http://fake", WithNonBlocking(nonBlocking))
+		derived := logger.With("err", errors.New("boom")).WithGroup("g")
+
+		handler.Close()
+
+		logger.Info("after close")
+		derived.Info("after close", "k", "v")
+		handler.HandleCLEFEvent(CLEFEvent{Message: "after close"})
+	}
+}
+
+// TestSeqHandler_LogDuringClose checks that logging concurrently with Close() doesn't panic.
+func TestSeqHandler_LogDuringClose(t *testing.T) {
+	logger, handler := NewLogger("http://fake", WithWorkers(4))
+
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 1000 {
+				logger.Info("racing close")
+			}
+		}()
+	}
+	handler.Close()
+	wg.Wait()
 }
 
 // TestSeqHandler_convertLevel ensures level conversion matches expectations.
