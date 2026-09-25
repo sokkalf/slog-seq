@@ -232,6 +232,10 @@ func (h *SeqHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 }
 
 func (h *SeqHandler) WithGroup(name string) slog.Handler {
+	if name == "" {
+		return h
+	}
+
 	h2 := *h
 	h2.groups = slices.Clone(h.groups)
 	h2.groups = append(h2.groups, name)

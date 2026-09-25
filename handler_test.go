@@ -194,6 +194,37 @@ func TestSeqHandler_WithGroup(t *testing.T) {
 	}
 }
 
+// TestSeqHandler_WithEmptyGroup checks that WithGroup("") returns the handler unchanged.
+func TestSeqHandler_WithEmptyGroup(t *testing.T) {
+	_, handler := NewLogger("http://fake",
+		WithWorkers(1),
+	)
+	defer handler.Close()
+	handler.noFlush = true // Disable flushing for this test
+
+	if got := handler.WithGroup(""); got != handler {
+		t.Errorf("expected WithGroup(\"\") to return the same handler, got %p want %p", got, handler)
+	}
+
+	logger := slog.New(handler)
+	logger.WithGroup("").With("id", "1234").Info("empty group", "k", "v")
+
+	select {
+	case evt := <-handler.workers[0].eventsCh:
+		if evt.Properties["id"] != "1234" {
+			t.Errorf("Expected id=1234, got %v", evt.Properties["id"])
+		}
+		if evt.Properties["k"] != "v" {
+			t.Errorf("Expected k=v, got %v", evt.Properties["k"])
+		}
+		if _, ok := evt.Properties[""]; ok {
+			t.Errorf("Expected no empty-named group, got %v", evt.Properties[""])
+		}
+	case <-time.After(2000 * time.Millisecond):
+		t.Error("Timed out waiting for event")
+	}
+}
+
 // TestSeqHandler_Close checks that Close() completes without error and presumably flushes.
 func TestSeqHandler_Close(t *testing.T) {
 	_, handler := NewLogger("http://fake",
