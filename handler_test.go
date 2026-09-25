@@ -4,13 +4,12 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/google/go-cmp/cmp"
-	"github.com/google/go-cmp/cmp/cmpopts"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestNewSeqHandler tests constructing a new handler with various config.
@@ -21,242 +20,136 @@ func TestNewSeqHandler(t *testing.T) {
 		WithFlushInterval(5*time.Second),
 		WithHandlerOptions(&slog.HandlerOptions{Level: slog.LevelWarn}),
 	)
+	defer handler.Close()
 
-	if handler.seqURL != "http://localhost:5341" {
-		t.Errorf("expected seqURL to be http://localhost:5341, got %s", handler.seqURL)
-	}
-	if handler.apiKey != "test-key" {
-		t.Errorf("expected apiKey to be test-key, got %s", handler.apiKey)
-	}
-	if handler.batchSize != 50 {
-		t.Errorf("expected batchSize = 50, got %d", handler.batchSize)
-	}
-	if handler.flushInterval != 5*time.Second {
-		t.Errorf("expected flushInterval = 5s, got %v", handler.flushInterval)
-	}
-	if handler.options.Level.Level() != slog.LevelWarn {
-		t.Errorf("expected level = Warn, got %v", handler.options.Level)
-	}
-
-	// Clean up
-	handler.Close()
+	assert.Equal(t, "http://localhost:5341", handler.seqURL)
+	assert.Equal(t, "test-key", handler.apiKey)
+	assert.Equal(t, 50, handler.batchSize)
+	assert.Equal(t, 5*time.Second, handler.flushInterval)
+	assert.Equal(t, slog.LevelWarn, handler.options.Level.Level())
 }
 
 // TestNewSeqHandler_InvalidOptions checks that invalid options fall back to the defaults instead of panicking.
 func TestNewSeqHandler_InvalidOptions(t *testing.T) {
+	srv := newSeqServer(t, nil)
 	for _, n := range []int{0, -1} {
-		logger, handler := NewLogger("http://fake",
+		logger, handler := newServerLogger(t, srv,
 			WithBatchSize(n),
 			WithFlushInterval(time.Duration(n)),
 			WithWorkers(n),
 			WithHandlerOptions(nil),
 		)
 
-		if handler.batchSize != defaultBatchSize {
-			t.Errorf("n=%d: expected batchSize = %d, got %d", n, defaultBatchSize, handler.batchSize)
-		}
-		if handler.flushInterval != defaultFlushInterval {
-			t.Errorf("n=%d: expected flushInterval = %v, got %v", n, defaultFlushInterval, handler.flushInterval)
-		}
-		if handler.workerCount != defaultWorkerCount {
-			t.Errorf("n=%d: expected workerCount = %d, got %d", n, defaultWorkerCount, handler.workerCount)
-		}
-		if handler.options.Level != nil {
-			t.Errorf("n=%d: expected default handler options, got %+v", n, handler.options)
-		}
+		assert.Equal(t, defaultBatchSize, handler.batchSize, "n=%d", n)
+		assert.Equal(t, defaultFlushInterval, handler.flushInterval, "n=%d", n)
+		assert.Equal(t, defaultWorkerCount, handler.workerCount, "n=%d", n)
+		assert.Nil(t, handler.options.Level, "n=%d", n)
 
 		logger.Info("should not panic")
 		handler.Close()
 	}
+	assert.Len(t, srv.Events(), 2)
 }
 
 // TestSeqHandler_Handle checks that Handle() sends events with correct properties.
 func TestSeqHandler_Handle(t *testing.T) {
-	_, handler := NewLogger("http://fake",
-		WithAPIKey(""),
-		WithBatchSize(10),
-		WithFlushInterval(5*time.Second),
-		WithWorkers(1),
-	)
-	handler.noFlush = true // Disable flushing for this test
-	defer handler.Close()
-
+	handler := newUnstartedHandler()
 	logger := slog.New(handler)
 
-	// Log something at Info level
 	logger.Info("Hello, slog-seq!", "user", "alice", "count", 123)
 
-	select {
-	case evt := <-handler.workers[0].eventsCh:
-		if evt.Message != "Hello, slog-seq!" {
-			t.Errorf("Expected message 'Hello, slog-seq!', got '%s'", evt.Message)
-		}
-		if evt.Level != "Information" {
-			t.Errorf("Expected level = Information, got '%s'", evt.Level)
-		}
-		if evt.Properties["user"] != "alice" {
-			t.Errorf("Expected user=alice, got %v", evt.Properties["user"])
-		}
-		if evt.Properties["count"].(int64) != 123 {
-			t.Errorf("Expected count=123, got %v", evt.Properties["count"])
-		}
-	case <-time.After(2000 * time.Millisecond):
-		t.Error("Timed out waiting for log event in eventsCh")
-	}
+	evt := nextEvent(t, handler)
+	assert.Equal(t, "Hello, slog-seq!", evt.Message)
+	assert.Equal(t, "Information", evt.Level)
+	assert.Equal(t, "alice", evt.Properties["user"])
+	assert.Equal(t, int64(123), evt.Properties["count"])
 }
 
 // TestSeqHandler_Enabled checks that level filtering via HandlerOptions works.
 func TestSeqHandler_Enabled(t *testing.T) {
-	opts := &slog.HandlerOptions{Level: slog.LevelWarn}
-	_, handler := NewLogger("http://fake",
-		WithAPIKey(""),
-		WithBatchSize(10),
-		WithFlushInterval(5*time.Second),
-		WithHandlerOptions(opts),
-	)
-	defer handler.Close()
+	handler := newUnstartedHandler(WithHandlerOptions(&slog.HandlerOptions{Level: slog.LevelWarn}))
+	ctx := context.Background()
 
-	// Debug/Info should be disabled
-	if handler.Enabled(context.Background(), slog.LevelDebug) {
-		t.Error("Debug level should be disabled")
-	}
-	if handler.Enabled(context.Background(), slog.LevelInfo) {
-		t.Error("Info level should be disabled")
-	}
-	// Warn and above should be enabled
-	if !handler.Enabled(context.Background(), slog.LevelWarn) {
-		t.Error("Warn level should be enabled")
-	}
-	if !handler.Enabled(context.Background(), slog.LevelError) {
-		t.Error("Error level should be enabled")
-	}
+	assert.False(t, handler.Enabled(ctx, slog.LevelDebug), "Debug level should be disabled")
+	assert.False(t, handler.Enabled(ctx, slog.LevelInfo), "Info level should be disabled")
+	assert.True(t, handler.Enabled(ctx, slog.LevelWarn), "Warn level should be enabled")
+	assert.True(t, handler.Enabled(ctx, slog.LevelError), "Error level should be enabled")
 }
 
 // TestSeqHandler_WithAttrs checks that WithAttrs merges attributes into subsequent logs.
 func TestSeqHandler_WithAttrs(t *testing.T) {
-	_, handler := NewLogger("http://fake",
-		WithAPIKey(""),
-		WithBatchSize(10),
-		WithFlushInterval(5*time.Second),
-		WithWorkers(1),
-	)
-	defer handler.Close()
-	handler.noFlush = true // Disable flushing for this test
+	handler := newUnstartedHandler()
+	logger := slog.New(handler).With("service", "testsvc")
 
-	logger := slog.New(handler)
-	logger2 := logger.With("service", "testsvc")
+	logger.Info("WithAttrs test", "version", "1.2.3")
 
-	logger2.Info("WithAttrs test", "version", "1.2.3")
-
-	select {
-	case evt := <-handler.workers[0].eventsCh:
-		// Should have both service=testsvc and version=1.2.3
-		if evt.Properties["service"] != "testsvc" {
-			t.Errorf("Expected service=testsvc, got %v", evt.Properties["service"])
-		}
-		if evt.Properties["version"] != "1.2.3" {
-			t.Errorf("Expected version=1.2.3, got %v", evt.Properties["version"])
-		}
-	case <-time.After(2000 * time.Millisecond):
-		t.Error("Timed out waiting for WithAttrs event")
-	}
+	evt := nextEvent(t, handler)
+	assert.Equal(t, "testsvc", evt.Properties["service"])
+	assert.Equal(t, "1.2.3", evt.Properties["version"])
 }
 
-// TestSeqHandler_WithGroup checks that WithGroup prefixes attribute keys.
+// TestSeqHandler_WithGroup checks that WithGroup nests attributes.
 func TestSeqHandler_WithGroup(t *testing.T) {
-	_, handler := NewLogger("http://fake",
-		WithAPIKey(""),
-		WithBatchSize(10),
-		WithFlushInterval(5*time.Second),
-		WithWorkers(1),
-	)
-	defer handler.Close()
-	handler.noFlush = true // Disable flushing for this test
-
+	handler := newUnstartedHandler()
 	logger := slog.New(handler)
 	grouped := logger.WithGroup("request").With("id", "1234").WithGroup("headers").With("Accept", "application/json")
 
 	grouped.Info("Grouped log")
 
-	select {
-	case evt := <-handler.workers[0].eventsCh:
-		// We expect keys to be "request.id" and "request.headers.Accept"
-		request := evt.Properties["request"].(map[string]any)
-		headers := request["headers"].(map[string]any)
-		if request["id"] != "1234" {
-			t.Errorf("Expected request.id=1234, got %v", request["id"])
-		}
-		if headers["Accept"] != "application/json" {
-			t.Errorf("Expected request.headers.Accept=application/json, got %v", headers["Accept"])
-		}
-	case <-time.After(2000 * time.Millisecond):
-		t.Error("Timed out waiting for grouped event")
-	}
+	evt := nextEvent(t, handler)
+	request, ok := evt.Properties["request"].(map[string]any)
+	require.True(t, ok, "expected group request, got %#v", evt.Properties["request"])
+	headers, ok := request["headers"].(map[string]any)
+	require.True(t, ok, "expected group request.headers, got %#v", request["headers"])
+	assert.Equal(t, "1234", request["id"])
+	assert.Equal(t, "application/json", headers["Accept"])
 }
 
 // TestSeqHandler_WithEmptyGroup checks that WithGroup("") returns the handler unchanged.
 func TestSeqHandler_WithEmptyGroup(t *testing.T) {
-	_, handler := NewLogger("http://fake",
-		WithWorkers(1),
-	)
-	defer handler.Close()
-	handler.noFlush = true // Disable flushing for this test
+	handler := newUnstartedHandler()
 
-	if got := handler.WithGroup(""); got != handler {
-		t.Errorf("expected WithGroup(\"\") to return the same handler, got %p want %p", got, handler)
-	}
+	assert.Same(t, handler, handler.WithGroup(""))
 
 	logger := slog.New(handler)
 	logger.WithGroup("").With("id", "1234").Info("empty group", "k", "v")
 
-	select {
-	case evt := <-handler.workers[0].eventsCh:
-		if evt.Properties["id"] != "1234" {
-			t.Errorf("Expected id=1234, got %v", evt.Properties["id"])
-		}
-		if evt.Properties["k"] != "v" {
-			t.Errorf("Expected k=v, got %v", evt.Properties["k"])
-		}
-		if _, ok := evt.Properties[""]; ok {
-			t.Errorf("Expected no empty-named group, got %v", evt.Properties[""])
-		}
-	case <-time.After(2000 * time.Millisecond):
-		t.Error("Timed out waiting for event")
-	}
+	evt := nextEvent(t, handler)
+	assert.Equal(t, "1234", evt.Properties["id"])
+	assert.Equal(t, "v", evt.Properties["k"])
+	assert.NotContains(t, evt.Properties, "")
 }
 
-// TestSeqHandler_Close checks that Close() completes without error and presumably flushes.
+// TestSeqHandler_Close checks that Close() sends the buffered events.
 func TestSeqHandler_Close(t *testing.T) {
-	_, handler := NewLogger("http://fake",
-		WithAPIKey(""),
-		WithBatchSize(10),
-		WithFlushInterval(5*time.Second),
-	)
+	srv := newSeqServer(t, nil)
+	logger, handler := newServerLogger(t, srv, WithFlushInterval(time.Hour))
 
-	if err := handler.Close(); err != nil {
-		t.Errorf("Close returned error: %v", err)
+	logger.Info("one")
+	logger.Info("two")
+	logger.Info("three")
+	require.NoError(t, handler.Close())
+
+	var messages []any
+	for _, e := range srv.Events() {
+		messages = append(messages, e["@m"])
 	}
-
-	// Optionally, you might check that the background goroutine is done
-	// but we can't do that directly without instrumentation or reflection.
+	assert.Equal(t, []any{"one", "two", "three"}, messages)
 }
 
 // TestSeqHandler_CloseTwice checks that a second Close() doesn't panic.
 func TestSeqHandler_CloseTwice(t *testing.T) {
 	_, handler := NewLogger("http://fake")
 
-	if err := handler.Close(); err != nil {
-		t.Errorf("first Close returned error: %v", err)
-	}
-	if err := handler.Close(); err != nil {
-		t.Errorf("second Close returned error: %v", err)
-	}
+	assert.NoError(t, handler.Close(), "first Close")
+	assert.NoError(t, handler.Close(), "second Close")
 }
 
 // TestSeqHandler_LogAfterClose checks that logging after Close() is a no-op, also through derived handlers.
 func TestSeqHandler_LogAfterClose(t *testing.T) {
+	srv := newSeqServer(t, nil)
 	for _, nonBlocking := range []bool{true, false} {
-		logger, handler := NewLogger("http://fake", WithNonBlocking(nonBlocking))
+		logger, handler := newServerLogger(t, srv, WithNonBlocking(nonBlocking))
 		derived := logger.With("err", errors.New("boom")).WithGroup("g")
 
 		handler.Close()
@@ -265,11 +158,13 @@ func TestSeqHandler_LogAfterClose(t *testing.T) {
 		derived.Info("after close", "k", "v")
 		handler.HandleCLEFEvent(CLEFEvent{Message: "after close"})
 	}
+	assert.Empty(t, srv.Events())
 }
 
 // TestSeqHandler_LogDuringClose checks that logging concurrently with Close() doesn't panic.
 func TestSeqHandler_LogDuringClose(t *testing.T) {
-	logger, handler := NewLogger("http://fake", WithWorkers(4))
+	srv := newSeqServer(t, nil)
+	logger, handler := newServerLogger(t, srv, WithWorkers(4))
 
 	var wg sync.WaitGroup
 	for range 8 {
@@ -306,77 +201,43 @@ func TestSeqHandler_convertLevel(t *testing.T) {
 	}
 
 	for _, c := range cases {
-		out := convertLevel(c.in)
-		if out != c.expected {
-			t.Errorf("convertLevel(%v) = %s, want %s", c.in, out, c.expected)
-		}
+		assert.Equal(t, c.expected, convertLevel(c.in), "convertLevel(%v)", c.in)
 	}
 }
 
 // TestSeqHandler_addSource ensures source information is added to log events.
 func TestSeqHandler_addSource(t *testing.T) {
-	_, handler := NewLogger("http://fake",
-		WithAPIKey(""),
-		WithBatchSize(10),
-		WithFlushInterval(5*time.Second),
+	handler := newUnstartedHandler(
 		WithSourceKey("gosource"),
 		WithHandlerOptions(&slog.HandlerOptions{AddSource: true}),
 	)
-	defer handler.Close()
-	handler.noFlush = true // Disable flushing for this test
-
 	logger := slog.New(handler)
 
 	logger.Info("Hello, slog-seq!", "user", "alice", "count", 123)
 
-	select {
-	case evt := <-handler.workers[0].eventsCh:
-		if evt.Properties["gosource"] == nil {
-			t.Error("Expected gosource to be set")
-		}
-		source := evt.Properties["gosource"].(*slog.Source)
-		if source.File == "" {
-			t.Error("Expected source file to be set")
-		}
-		if source.Line == 0 {
-			t.Error("Expected source line to be set")
-		}
-		if source.Function == "" {
-			t.Error("Expected source function to be set")
-		}
-		if !strings.Contains(source.Function, "TestSeqHandler_addSource") {
-			t.Errorf("Expected source function to contain TestSeqHandler_addSource, got %s", source.Function)
-		}
-	case <-time.After(2000 * time.Millisecond):
-		t.Error("Timed out waiting for log event in eventsCh")
-	default:
-		t.Error("Expected event to be sent")
-	}
+	evt := nextEvent(t, handler)
+	source, ok := evt.Properties["gosource"].(*slog.Source)
+	require.True(t, ok, "expected gosource to be a *slog.Source, got %#v", evt.Properties["gosource"])
+	assert.NotEmpty(t, source.File)
+	assert.NotZero(t, source.Line)
+	assert.Contains(t, source.Function, "TestSeqHandler_addSource")
 }
 
 // TestSeqHandler_grouping ensures that grouping works as expected.
 // test case from comments in slog.Handler
 func TestSeqHandler_grouping(t *testing.T) {
-	_, handler := NewLogger("http://fake",
-		WithAPIKey(""),
-		WithBatchSize(10),
-		WithFlushInterval(5*time.Second),
-		WithWorkers(1),
-	)
-	defer handler.Close()
-	handler.noFlush = true // Disable flushing for this test
-
+	handler := newUnstartedHandler()
 	ctx := context.Background()
 	logger := slog.New(handler)
+
 	logger.WithGroup("s").LogAttrs(ctx, slog.LevelInfo, "huba", slog.Int("a", 1), slog.Int("b", 2))
 	logger.LogAttrs(ctx, slog.LevelInfo, "huba", slog.Group("s", slog.Int("a", 1), slog.Int("b", 2)))
 
-	event1 := <-handler.workers[0].eventsCh
-	event2 := <-handler.workers[0].eventsCh
+	event1 := nextEvent(t, handler)
+	event2 := nextEvent(t, handler)
 
-	if diff := cmp.Diff(event1, event2, cmpopts.IgnoreFields(CLEFEvent{}, "Timestamp")); diff != "" {
-		t.Errorf("events differ: (-got +want)\n%s", diff)
-	}
+	event2.Timestamp = event1.Timestamp
+	assert.Equal(t, event1, event2)
 }
 
 func TestSeqHandler_replaceAttr(t *testing.T) {
@@ -388,31 +249,19 @@ func TestSeqHandler_replaceAttr(t *testing.T) {
 			return a
 		},
 	}
-	_, handler := NewLogger("http://fake",
-		WithAPIKey(""),
-		WithBatchSize(10),
-		WithFlushInterval(5*time.Second),
-		WithWorkers(1),
-		WithHandlerOptions(opts),
-	)
-	defer handler.Close()
-	handler.noFlush = true // Disable flushing for this test
-
+	handler := newUnstartedHandler(WithHandlerOptions(opts))
 	logger := slog.New(handler)
+
 	logger.Info("Super secret info", "password", "2Fat2Fly")
 	logger.WithGroup("secret_info").Info("Wohoo", "password", "secret")
 
-	event1 := <-handler.workers[0].eventsCh
-	event2 := <-handler.workers[0].eventsCh
+	event1 := nextEvent(t, handler)
+	event2 := nextEvent(t, handler)
 
-	if event1.Properties["password"] != "*****" {
-		t.Errorf("Expected password=*****, got %v", event1.Properties["password"])
-	}
-
-	secret_info := event2.Properties["secret_info"].(map[string]any)
-	if secret_info["password"] != "*****" {
-		t.Errorf("Expected password=*****, got %v", secret_info["password"])
-	}
+	assert.Equal(t, "*****", event1.Properties["password"])
+	secretInfo, ok := event2.Properties["secret_info"].(map[string]any)
+	require.True(t, ok, "expected group secret_info, got %#v", event2.Properties["secret_info"])
+	assert.Equal(t, "*****", secretInfo["password"])
 }
 
 // A tiny payload that implements slog.LogValuer.
@@ -429,13 +278,7 @@ func (p payload) LogValue() slog.Value {
 }
 
 func TestSeqHandler_AnonymousGroup(t *testing.T) {
-
-	_, handler := NewLogger("http://fake",
-		WithWorkers(1),
-	)
-	defer handler.Close()
-	handler.noFlush = true // Disable flushing for the test
-
+	handler := newUnstartedHandler()
 	logger := slog.New(handler)
 
 	// 1. Argument-style anonymous group.
@@ -446,44 +289,26 @@ func TestSeqHandler_AnonymousGroup(t *testing.T) {
 	logger.With("", payload{ID: 42, Name: "keyname"}).
 		Info("anon-group-with")
 
-	evt1 := <-handler.workers[0].eventsCh
-	evt2 := <-handler.workers[0].eventsCh
+	evt1 := nextEvent(t, handler)
+	evt2 := nextEvent(t, handler)
 
-	// --- Assertions for the first event (argument style) -----------
-	if got := evt1.Properties["id"]; got != int64(42) {
-		t.Errorf("argument style: expected id=42, got %v", got)
-	}
-	if got := evt1.Properties["name"]; got != "keyname" {
-		t.Errorf("argument style: expected name=arg, got %v", got)
-	}
-
-	// --- Assertions for the second event (With style) --------------
-	if got := evt2.Properties["id"]; got != int64(42) {
-		t.Errorf("With style: expected id=42, got %v", got)
-	}
-	if got := evt2.Properties["name"]; got != "keyname" {
-		t.Errorf("With style: expected name=with, got %v", got)
-	}
+	assert.Equal(t, int64(42), evt1.Properties["id"], "argument style")
+	assert.Equal(t, "keyname", evt1.Properties["name"], "argument style")
+	assert.Equal(t, int64(42), evt2.Properties["id"], "With style")
+	assert.Equal(t, "keyname", evt2.Properties["name"], "With style")
 
 	// The two events should differ only in Timestamp and Message.
-	if diff := cmp.Diff(evt1, evt2,
-		cmpopts.IgnoreFields(CLEFEvent{}, "Timestamp", "Message"),
-	); diff != "" {
-		t.Errorf("events differ: (-arg +with)\n%s", diff)
-	}
+	evt2.Timestamp = evt1.Timestamp
+	evt2.Message = evt1.Message
+	assert.Equal(t, evt1, evt2)
 }
 
 // TestSeqHandler_errorValues checks that error values are sent as strings no
 // matter how they reach the handler.
 func TestSeqHandler_errorValues(t *testing.T) {
-	_, handler := NewLogger("http://fake",
-		WithWorkers(1),
-		WithGlobalAttrs(slog.Any("global_err", errors.New("global"))),
-	)
-	defer handler.Close()
-	handler.noFlush = true // Disable flushing for this test
-
+	handler := newUnstartedHandler(WithGlobalAttrs(slog.Any("global_err", errors.New("global"))))
 	logger := slog.New(handler)
+
 	logger.With("with_err", errors.New("with")).
 		WithGroup("g").
 		Info("errors",
@@ -491,26 +316,13 @@ func TestSeqHandler_errorValues(t *testing.T) {
 			slog.Group("inner", slog.Any("group_err", errors.New("group"))),
 		)
 
-	evt := <-handler.workers[0].eventsCh
-
-	if got := evt.Properties["global_err"]; got != "global" {
-		t.Errorf("global attrs: expected global_err=\"global\", got %#v", got)
-	}
-	if got := evt.Properties["with_err"]; got != "with" {
-		t.Errorf("With(): expected with_err=\"with\", got %#v", got)
-	}
+	evt := nextEvent(t, handler)
+	assert.Equal(t, "global", evt.Properties["global_err"], "global attrs")
+	assert.Equal(t, "with", evt.Properties["with_err"], "With()")
 	g, ok := evt.Properties["g"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected group g, got %#v", evt.Properties["g"])
-	}
-	if got := g["record_err"]; got != "record" {
-		t.Errorf("record attr: expected g.record_err=\"record\", got %#v", got)
-	}
+	require.True(t, ok, "expected group g, got %#v", evt.Properties["g"])
+	assert.Equal(t, "record", g["record_err"], "record attr")
 	inner, ok := g["inner"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected group g.inner, got %#v", g["inner"])
-	}
-	if got := inner["group_err"]; got != "group" {
-		t.Errorf("group attr: expected g.inner.group_err=\"group\", got %#v", got)
-	}
+	require.True(t, ok, "expected group g.inner, got %#v", g["inner"])
+	assert.Equal(t, "group", inner["group_err"], "group attr")
 }

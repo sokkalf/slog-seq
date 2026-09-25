@@ -13,9 +13,6 @@ import (
 
 func (h *SeqHandler) runBackgroundFlusher(w *worker) {
 	defer w.wg.Done()
-	if h.noFlush { // Used in tests
-		return
-	}
 
 	ticker := time.NewTicker(h.flushInterval)
 	defer ticker.Stop()

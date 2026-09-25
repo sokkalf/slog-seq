@@ -43,7 +43,6 @@ type SeqHandler struct {
 	sourceKey        string
 	workerCount      int
 	nonBlocking      bool
-	noFlush          bool // Used in tests
 
 	// http client
 	client *http.Client
@@ -76,7 +75,6 @@ func newSeqHandler(seqURL string) *SeqHandler {
 		flushInterval: defaultFlushInterval,
 		workerCount:   defaultWorkerCount,
 		nonBlocking:   true,
-		noFlush:       false,
 		sourceKey:     slog.SourceKey,
 		options:       slog.HandlerOptions{},
 	}
@@ -98,6 +96,16 @@ func (h *SeqHandler) applyDefaults() {
 }
 
 func (h *SeqHandler) start() {
+	h.setup()
+	// Start background workers
+	for i := range h.workers {
+		h.workers[i].wg.Add(1)
+		go h.runBackgroundFlusher(&h.workers[i])
+	}
+}
+
+// setup prepares the handler for use without starting the workers.
+func (h *SeqHandler) setup() {
 	if h.client == nil {
 		h.client = newHttpClient(h.disableTLSVerify, h.workerCount)
 	}
@@ -108,12 +116,9 @@ func (h *SeqHandler) start() {
 	}
 	h.lifecycle = &lifecycle{}
 	h.workers = make([]worker, h.workerCount)
-	// Start background workers
-	for i := range h.workerCount {
+	for i := range h.workers {
 		h.workers[i].eventsCh = make(chan CLEFEvent, 1000)
 		h.workers[i].doneCh = make(chan struct{})
-		h.workers[i].wg.Add(1)
-		go h.runBackgroundFlusher(&h.workers[i])
 	}
 }
 
