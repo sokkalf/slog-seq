@@ -3,7 +3,6 @@ module github.com/sokkalf/slog-seq
 go 1.26.0
 
 require (
-	github.com/google/go-cmp v0.7.0
 	github.com/stretchr/testify v1.12.1
 	go.opentelemetry.io/otel v1.46.0
 	go.opentelemetry.io/otel/sdk v1.46.0

@@ -3,8 +3,8 @@ package slogseq
 import (
 	"context"
 	"testing"
-	"time"
 
+	"github.com/stretchr/testify/assert"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -12,8 +12,7 @@ import (
 )
 
 func TestOnEnd_WithException(t *testing.T) {
-	handler := &SeqHandler{noFlush: true, workerCount: 1}
-	handler.start()
+	handler := newUnstartedHandler()
 	processor := &LoggingSpanProcessor{Handler: handler}
 
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(processor))
@@ -32,33 +31,18 @@ func TestOnEnd_WithException(t *testing.T) {
 	))
 	span.End()
 
-	var evt CLEFEvent
-
-	select {
-	case evt = <-handler.workers[0].eventsCh:
-	case <-time.After(1000 * time.Millisecond):
-		t.Fatal("timed out waiting for event")
-	}
+	evt := nextEvent(t, handler)
 
 	// Check that the exception message overwrote the event's original name.
-	if evt.Message != "error occurred" {
-		t.Errorf("expected message 'error occurred', got %s", evt.Message)
-	}
+	assert.Equal(t, "error occurred", evt.Message)
 	// Check that the level was set to error.
-	if evt.Level != CLEFLevelError.String() {
-		t.Errorf("expected level %s, got %s", CLEFLevelError.String(), evt.Level)
-	}
+	assert.Equal(t, CLEFLevelError.String(), evt.Level)
 	// Check that additional properties (like code) are present.
-	if code, ok := evt.Properties["code"]; !ok {
-		t.Errorf("expected property 'code' to be set")
-	} else if code.(int64) != 500 {
-		t.Errorf("expected code 500, got %v", code)
-	}
+	assert.Equal(t, int64(500), evt.Properties["code"])
 }
 
 func TestOnEnd_PropagatesResourceAttributes(t *testing.T) {
-	handler := &SeqHandler{noFlush: true, workerCount: 1}
-	handler.start()
+	handler := newUnstartedHandler()
 	processor := &LoggingSpanProcessor{Handler: handler}
 
 	res := resource.NewSchemaless(
@@ -77,22 +61,8 @@ func TestOnEnd_PropagatesResourceAttributes(t *testing.T) {
 	span.End()
 
 	// One event emitted from AddEvent, one from span end.
-	var events []CLEFEvent
-	for i := 0; i < 2; i++ {
-		select {
-		case e := <-handler.workers[0].eventsCh:
-			events = append(events, e)
-		case <-time.After(1000 * time.Millisecond):
-			t.Fatalf("timed out waiting for event %d", i)
-		}
-	}
-
-	for _, evt := range events {
-		if evt.ResourceAttributes["service.name"] != "testsvc" {
-			t.Errorf("expected @ra service.name=testsvc, got %v", evt.ResourceAttributes["service.name"])
-		}
-		if evt.ResourceAttributes["service.version"] != "1.2.3" {
-			t.Errorf("expected @ra service.version=1.2.3, got %v", evt.ResourceAttributes["service.version"])
-		}
+	for _, evt := range []CLEFEvent{nextEvent(t, handler), nextEvent(t, handler)} {
+		assert.Equal(t, "testsvc", evt.ResourceAttributes["service.name"], "@ra service.name")
+		assert.Equal(t, "1.2.3", evt.ResourceAttributes["service.version"], "@ra service.version")
 	}
 }
