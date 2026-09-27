@@ -41,6 +41,27 @@ func TestOnEnd_WithException(t *testing.T) {
 	assert.Equal(t, int64(500), evt.Properties["code"])
 }
 
+func TestOnEnd_NonStringExceptionMessage(t *testing.T) {
+	handler := newUnstartedHandler()
+	processor := &LoggingSpanProcessor{Handler: handler}
+
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(processor))
+	defer func() { _ = tp.Shutdown(context.Background()) }()
+
+	tracer := tp.Tracer("test-tracer")
+	_, span := tracer.Start(context.Background(), "testSpan")
+	span.AddEvent("originalEventName", trace.WithAttributes(
+		attribute.Int("exception.message", 42),
+	))
+
+	// A non-string exception.message used to panic inside span.End().
+	assert.NotPanics(t, func() { span.End() })
+
+	evt := nextEvent(t, handler)
+	assert.Equal(t, "42", evt.Message)
+	assert.Equal(t, CLEFLevelError.String(), evt.Level)
+}
+
 func TestOnEnd_PropagatesResourceAttributes(t *testing.T) {
 	handler := newUnstartedHandler()
 	processor := &LoggingSpanProcessor{Handler: handler}
