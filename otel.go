@@ -17,11 +17,7 @@ func (p *LoggingSpanProcessor) OnStart(ctx context.Context, s trace.ReadWriteSpa
 }
 
 func (p *LoggingSpanProcessor) OnEnd(s trace.ReadOnlySpan) {
-	events := s.Events()
-	for _, e := range events {
-		p.logOtelEventAsCLEF(s, e)
-	}
-	p.logOtelSpanAsCLEF(s)
+	_ = p.ExportSpans(context.Background(), []trace.ReadOnlySpan{s})
 }
 
 func (p *LoggingSpanProcessor) ForceFlush(ctx context.Context) error {
