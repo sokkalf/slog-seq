@@ -56,6 +56,15 @@ and then pass it to the `NewLogger` function with `slogseq.WithHandlerOptions(op
 For the `AddSource` option, the default key used is `slog.SourceKey` ("source"), but you can change it by using `slogseq.WithSourceKey("your-key")` if this key is already used for something else.
 If you log something else with this key when AddSource is enabled, it will be overwritten.
 
+## Flushing and shutdown
+
+`handler.Close()` stops the handler and sends the events it still holds, waiting at most 10 seconds.
+Use `handler.Shutdown(ctx)` to choose your own deadline. If the deadline passes, requests in flight are
+cancelled and the remaining events are dropped. Events that couldn't be sent are reported to the error
+handler, and returned as an error.
+
+`handler.Flush(ctx)` sends everything logged so far without stopping the handler.
+
 ## HTTP client
 
 If you need to disable TLS certificate verification, you can do so by using the option `slogseq.WithInsecure()`.
@@ -91,6 +100,14 @@ subSpan.End()
 span.AddEvent("Work done")
 slog.InfoContext(spanCtx, "All done!")
 span.End()
+```
+
+`tp.ForceFlush(ctx)` and `tp.Shutdown(ctx)` flush the handler, so the spans reach Seq. They don't close it,
+because the handler is usually shared with your logger, so still call `handler.Close()` when you're done:
+
+```go
+defer handler.Close()
+defer tp.Shutdown(context.Background())
 ```
 
 ![Seq with traces](../master/doc/seq_screenshot.png)

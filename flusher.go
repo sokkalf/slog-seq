@@ -12,7 +12,7 @@ import (
 )
 
 func (h *SeqHandler) runBackgroundFlusher(w *worker) {
-	defer w.wg.Done()
+	defer close(w.done)
 
 	ticker := time.NewTicker(h.flushInterval)
 	defer ticker.Stop()
@@ -27,21 +27,29 @@ func (h *SeqHandler) runBackgroundFlusher(w *worker) {
 		select {
 		case e, ok := <-w.eventsCh:
 			if !ok {
-				if len(events) > 0 {
-					if len(w.retryBuffer) > 0 {
-						leftover := h.sendWithRetry(w.retryBuffer)
-						w.retryBuffer = leftover
-					}
-					leftover := h.sendWithRetry(events)
-					if leftover != nil {
-						w.retryBuffer = append(w.retryBuffer, leftover...)
-					}
-				}
+				// Shutdown: the channel is closed and empty.
+				h.flushCurrentBatch(w, &events)
+				h.dropRetryBuffer(w)
 				return
 			}
 			events = append(events, e)
 			if len(events) >= h.batchSize {
 				h.flushCurrentBatch(w, &events)
+			}
+
+		case reply := <-w.flushCh:
+			// Events logged before the flush was requested are already queued.
+			for range len(w.eventsCh) {
+				events = append(events, <-w.eventsCh)
+				if len(events) >= h.batchSize {
+					h.flushCurrentBatch(w, &events)
+				}
+			}
+			h.flushCurrentBatch(w, &events)
+			if n := len(w.retryBuffer); n > 0 {
+				reply <- fmt.Errorf("slogseq: %d events could not be sent and are queued for retry", n)
+			} else {
+				reply <- nil
 			}
 
 		case <-ticker.C:
@@ -53,14 +61,20 @@ func (h *SeqHandler) runBackgroundFlusher(w *worker) {
 			// Purge events older than 5 minutes from retry buffer
 			cutoff := time.Now().Add(-5 * time.Minute)
 			h.purgeOldEvents(w, cutoff)
-
-		case <-w.doneCh:
-			if len(events) > 0 {
-				h.flushCurrentBatch(w, &events)
-			}
-			return
 		}
 	}
+}
+
+// dropRetryBuffer discards the events that are still unsent when the worker
+// stops, and reports how many there were.
+func (h *SeqHandler) dropRetryBuffer(w *worker) {
+	n := len(w.retryBuffer)
+	if n == 0 {
+		return
+	}
+	w.retryBuffer = nil
+	w.err = fmt.Errorf("slogseq: dropped %d events that could not be sent before shutdown", n)
+	h.errorHandlerFunc(w.err)
 }
 
 func (h *SeqHandler) flushCurrentBatch(w *worker, events *[]CLEFEvent) {
@@ -122,6 +136,10 @@ func (h *SeqHandler) attemptSendBatch(events []CLEFEvent) bool {
 	if len(events) == 0 {
 		return true
 	}
+	if h.lifecycle.ctx.Err() != nil {
+		// Shutdown gave up waiting. Keep the events so the drop is counted.
+		return false
+	}
 
 	var sb strings.Builder
 	enc := json.NewEncoder(&sb)
@@ -133,7 +151,7 @@ func (h *SeqHandler) attemptSendBatch(events []CLEFEvent) bool {
 		}
 	}
 
-	req, err := http.NewRequest("POST", h.seqURL, strings.NewReader(sb.String()))
+	req, err := http.NewRequestWithContext(h.lifecycle.ctx, "POST", h.seqURL, strings.NewReader(sb.String()))
 	if err != nil {
 		h.errorHandlerFunc(err)
 		return false
@@ -145,7 +163,10 @@ func (h *SeqHandler) attemptSendBatch(events []CLEFEvent) bool {
 
 	resp, err := h.client.Do(req)
 	if err != nil {
-		h.errorHandlerFunc(err)
+		// If Shutdown gave up waiting, the drop is reported when the worker stops.
+		if h.lifecycle.ctx.Err() == nil {
+			h.errorHandlerFunc(err)
+		}
 		return false
 	}
 	defer func() {
