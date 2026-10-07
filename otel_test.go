@@ -3,8 +3,10 @@ package slogseq
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -15,9 +17,9 @@ func TestOnEnd_WithException(t *testing.T) {
 	handler := newUnstartedHandler()
 	processor := &LoggingSpanProcessor{Handler: handler}
 
+	// OnEnd runs inside span.End(), so the event is queued without a flush.
+	// The workers aren't running, so tp.Shutdown() would wait for a flush forever.
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(processor))
-	// Ensure spans are processed before the test exits.
-	defer func() { _ = tp.Shutdown(context.Background()) }()
 
 	// Obtain a tracer from the provider.
 	tracer := tp.Tracer("test-tracer")
@@ -46,7 +48,6 @@ func TestOnEnd_NonStringExceptionMessage(t *testing.T) {
 	processor := &LoggingSpanProcessor{Handler: handler}
 
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(processor))
-	defer func() { _ = tp.Shutdown(context.Background()) }()
 
 	tracer := tp.Tracer("test-tracer")
 	_, span := tracer.Start(context.Background(), "testSpan")
@@ -74,7 +75,6 @@ func TestOnEnd_PropagatesResourceAttributes(t *testing.T) {
 		sdktrace.WithSpanProcessor(processor),
 		sdktrace.WithResource(res),
 	)
-	defer func() { _ = tp.Shutdown(context.Background()) }()
 
 	tracer := tp.Tracer("test-tracer")
 	_, span := tracer.Start(context.Background(), "rootSpan")
@@ -86,4 +86,38 @@ func TestOnEnd_PropagatesResourceAttributes(t *testing.T) {
 		assert.Equal(t, "testsvc", evt.ResourceAttributes["service.name"], "@ra service.name")
 		assert.Equal(t, "1.2.3", evt.ResourceAttributes["service.version"], "@ra service.version")
 	}
+}
+
+func TestLoggingSpanProcessor_ForceFlush(t *testing.T) {
+	srv := newSeqServer(t, nil)
+	_, handler := newServerLogger(t, srv, WithFlushInterval(time.Hour))
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(&LoggingSpanProcessor{Handler: handler}))
+
+	_, span := tp.Tracer("test-tracer").Start(context.Background(), "testSpan")
+	span.End()
+	require.NoError(t, tp.ForceFlush(t.Context()))
+
+	events := srv.Events()
+	require.Len(t, events, 1)
+	assert.Equal(t, "testSpan", events[0]["@m"])
+}
+
+// TestLoggingSpanProcessor_Shutdown checks that shutting down the tracer provider sends the spans, but leaves the
+// handler running for the logger.
+func TestLoggingSpanProcessor_Shutdown(t *testing.T) {
+	srv := newSeqServer(t, nil)
+	logger, handler := newServerLogger(t, srv, WithFlushInterval(time.Hour))
+	// Used as an exporter, as the README shows.
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(
+		sdktrace.NewSimpleSpanProcessor(&LoggingSpanProcessor{Handler: handler}),
+	))
+
+	_, span := tp.Tracer("test-tracer").Start(context.Background(), "testSpan")
+	span.End()
+	require.NoError(t, tp.Shutdown(t.Context()))
+	assert.Equal(t, []any{"testSpan"}, messages(srv.Events()))
+
+	logger.Info("after tracer shutdown")
+	require.NoError(t, handler.Close())
+	assert.Equal(t, []any{"testSpan", "after tracer shutdown"}, messages(srv.Events()))
 }

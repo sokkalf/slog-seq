@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -178,6 +180,143 @@ func TestSeqHandler_LogDuringClose(t *testing.T) {
 	}
 	handler.Close()
 	wg.Wait()
+}
+
+// TestSeqHandler_CloseWithSlowServer checks that Close() sends every buffered event, even when the server is slow.
+func TestSeqHandler_CloseWithSlowServer(t *testing.T) {
+	srv := newSeqServer(t, func(int) int {
+		time.Sleep(20 * time.Millisecond)
+		return http.StatusCreated
+	})
+	logger, handler := newServerLogger(t, srv, WithNonBlocking(false), WithFlushInterval(time.Hour))
+
+	for i := range 1000 {
+		logger.Info("event", "i", i)
+	}
+	require.NoError(t, handler.Close())
+
+	assert.Equal(t, 1000, len(srv.Events()))
+}
+
+// TestSeqHandler_CloseReportsUnsentEvents checks that events still unsent at shutdown are reported, not silently lost.
+func TestSeqHandler_CloseReportsUnsentEvents(t *testing.T) {
+	srv := newSeqServer(t, func(int) int { return http.StatusInternalServerError })
+	var errs errorRecorder
+	logger, handler := newServerLogger(t, srv, WithFlushInterval(time.Hour), WithErrorHandlerFunc(errs.handle))
+
+	logger.Info("one")
+	logger.Info("two")
+	logger.Info("three")
+	err := handler.Close()
+
+	require.ErrorContains(t, err, "dropped 3 events")
+	reported := errs.Errors()
+	require.NotEmpty(t, reported)
+	assert.ErrorIs(t, err, reported[len(reported)-1], "the drop should also go to the error handler")
+	assert.Empty(t, srv.Events())
+}
+
+// TestSeqHandler_ShutdownDeadline checks that Shutdown() returns when its context expires, even with a hung
+// server and senders blocked in blocking mode.
+func TestSeqHandler_ShutdownDeadline(t *testing.T) {
+	release := make(chan struct{})
+	srv := newSeqServer(t, func(int) int {
+		<-release
+		return http.StatusCreated
+	})
+	// Registered after the server, so it runs first and lets the server close.
+	t.Cleanup(func() { close(release) })
+
+	var errs errorRecorder
+	logger, handler := newServerLogger(t, srv,
+		WithNonBlocking(false),
+		WithBatchSize(1),
+		WithErrorHandlerFunc(errs.handle),
+	)
+
+	logged := make(chan struct{})
+	go func() {
+		defer close(logged)
+		// More than the channel holds, so the sender blocks.
+		for range 2000 {
+			logger.Info("stuck")
+		}
+	}()
+	require.Eventually(t, func() bool { return len(handler.workers[0].eventsCh) == cap(handler.workers[0].eventsCh) },
+		time.Second, 5*time.Millisecond, "expected the channel to fill up")
+
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	err := handler.Shutdown(ctx)
+
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.Less(t, time.Since(start), time.Second)
+
+	// The workers give up on the hung request, so the blocked sender is released and the drop is reported.
+	select {
+	case <-logged:
+	case <-time.After(5 * time.Second):
+		require.FailNow(t, "the blocked sender was never released")
+	}
+	require.Eventually(t, func() bool {
+		for _, err := range errs.Errors() {
+			if strings.Contains(err.Error(), "dropped") {
+				return true
+			}
+		}
+		return false
+	}, 5*time.Second, 5*time.Millisecond, "expected the dropped events to be reported")
+	for _, err := range errs.Errors() {
+		assert.NotErrorIs(t, err, context.Canceled, "cancelled requests shouldn't be reported on their own")
+	}
+}
+
+// TestSeqHandler_Flush checks that Flush() sends the queued events and leaves the handler running.
+func TestSeqHandler_Flush(t *testing.T) {
+	srv := newSeqServer(t, nil)
+	logger, handler := newServerLogger(t, srv, WithWorkers(3), WithFlushInterval(time.Hour))
+
+	for range 10 {
+		logger.Info("before flush")
+	}
+	require.NoError(t, handler.Flush(t.Context()))
+	assert.Len(t, srv.Events(), 10)
+
+	logger.Info("after flush")
+	require.NoError(t, handler.Close())
+	assert.Len(t, srv.Events(), 11)
+}
+
+// TestSeqHandler_FlushFailure checks that Flush() reports events that couldn't be sent, and keeps them for retry.
+func TestSeqHandler_FlushFailure(t *testing.T) {
+	// The first request fails, the rest succeed.
+	srv := newSeqServer(t, func(n int) int {
+		if n == 1 {
+			return http.StatusInternalServerError
+		}
+		return http.StatusCreated
+	})
+	logger, handler := newServerLogger(t, srv, WithFlushInterval(time.Hour))
+
+	logger.Info("one")
+	logger.Info("two")
+	require.ErrorContains(t, handler.Flush(t.Context()), "2 events could not be sent")
+	assert.Empty(t, srv.Events())
+
+	require.NoError(t, handler.Flush(t.Context()))
+	assert.Len(t, srv.Events(), 2)
+}
+
+// TestSeqHandler_FlushAfterClose checks that Flush() returns straight away once the handler is closed.
+func TestSeqHandler_FlushAfterClose(t *testing.T) {
+	srv := newSeqServer(t, nil)
+	_, handler := newServerLogger(t, srv)
+	require.NoError(t, handler.Close())
+
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	assert.NoError(t, handler.Flush(ctx))
 }
 
 // TestSeqHandler_convertLevel ensures level conversion matches expectations.

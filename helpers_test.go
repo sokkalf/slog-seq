@@ -114,3 +114,23 @@ func nextEvent(t *testing.T, h *SeqHandler) CLEFEvent {
 		return CLEFEvent{}
 	}
 }
+
+// errorRecorder collects the errors passed to a handler's error handler,
+// which runs on the worker goroutines.
+type errorRecorder struct {
+	mu   sync.Mutex
+	errs []error
+}
+
+func (r *errorRecorder) handle(err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.errs = append(r.errs, err)
+}
+
+// Errors returns the errors recorded so far.
+func (r *errorRecorder) Errors() []error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.errs)
+}

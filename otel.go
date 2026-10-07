@@ -20,12 +20,17 @@ func (p *LoggingSpanProcessor) OnEnd(s trace.ReadOnlySpan) {
 	_ = p.ExportSpans(context.Background(), []trace.ReadOnlySpan{s})
 }
 
+// ForceFlush sends the spans that have ended to Seq, along with any log
+// events the handler holds.
 func (p *LoggingSpanProcessor) ForceFlush(ctx context.Context) error {
-	return nil
+	return p.Handler.Flush(ctx)
 }
 
+// Shutdown flushes the handler like ForceFlush. It doesn't shut the handler
+// down, because the handler is usually shared with a slog.Logger that may
+// still be in use. Close the handler separately.
 func (p *LoggingSpanProcessor) Shutdown(ctx context.Context) error {
-	return nil
+	return p.Handler.Flush(ctx)
 }
 
 func (p *LoggingSpanProcessor) ExportSpans(ctx context.Context, spans []trace.ReadOnlySpan) error {
